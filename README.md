@@ -17,6 +17,7 @@ npx skills@latest add farishamy-asiaquest/skills
 | Skill | What it does |
 |-------|--------------|
 | [learn-explainer](skills/learn-explainer/SKILL.md) | Explain a PR, issue, or code flow as an interactive, self-contained HTML learning page |
+| [issue-walkthrough](skills/issue-walkthrough/SKILL.md) | Walk a newcomer through a GitHub issue before any code change: rules, branch, business and technical problem, approach |
 
 ## Adding a skill
 
