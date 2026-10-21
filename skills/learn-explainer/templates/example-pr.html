@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Example PR Explained</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1d2433;--mu:#667085;--ac:#2f6fed;--bd:#e3e6ec;--ok:#12a150;--bad:#d92d20;--warn:#f79009;--hl:#e8f0ff}
+@media(prefers-color-scheme:dark){:root{--bg:#10141c;--card:#181e2a;--tx:#e8ecf4;--mu:#94a0b8;--ac:#6b9bff;--bd:#2a3244;--ok:#32d583;--bad:#f97066;--warn:#fdb022;--hl:#1c2a4a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.6 system-ui,sans-serif;padding:0 20px 60px}
+main{max-width:920px;margin:auto}header{padding:32px 0 8px}h1{margin:0;font-size:26px}h2{margin:36px 0 8px;font-size:20px}
+.s{color:var(--mu)}nav{position:sticky;top:0;background:var(--bg);padding:10px 0;border-bottom:1px solid var(--bd);display:flex;gap:6px;flex-wrap:wrap;z-index:5}
+nav a{font-size:13px;padding:4px 10px;border:1px solid var(--bd);border-radius:99px;color:var(--tx);text-decoration:none;background:var(--card)}nav a:hover{border-color:var(--ac)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px 20px;margin:12px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.big{font-size:32px;font-weight:700}.bad{color:var(--bad)}.ok{color:var(--ok)}
+.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:12px 0}
+.step{flex:1 1 130px;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px;font-size:13px;position:relative}
+.step b{display:block;font-size:12px;color:var(--ac)}.step.hot{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 8%,var(--card))}
+.step.new{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 8%,var(--card))}
+code,pre{font:12.5px ui-monospace,monospace;background:var(--hl);border-radius:6px}code{padding:1px 5px}pre{padding:12px;overflow:auto}
+button{font:inherit;background:var(--ac);color:#fff;border:0;border-radius:8px;padding:6px 14px;cursor:pointer}button.g{background:var(--card);color:var(--tx);border:1px solid var(--bd)}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{border-bottom:1px solid var(--bd);padding:6px 8px;text-align:left}
+tr.skip{opacity:.45;text-decoration:line-through}tr.calc{background:color-mix(in srgb,var(--ok) 14%,transparent)}tr.cur{outline:2px solid var(--ac)}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;max-width:420px}
+.cal div{text-align:center;padding:6px 0;border-radius:6px;background:var(--hl);font-size:12px;color:var(--mu)}
+.cal div.d{background:var(--ok);color:#fff;font-weight:700}.cal div.x{background:var(--bad);color:#fff}.cal div.h{background:none;font-weight:700}
+.bar{height:22px;border-radius:6px;background:var(--bad);color:#fff;font-size:12px;padding:0 8px;line-height:22px;white-space:nowrap}
+.bar.n{background:var(--ok)}label{font-size:13px}input[type=range]{width:100%}
+.tabs button{margin-right:6px}.risk td:first-child{font-weight:600}
+.overflow{overflow-x:auto}
+</style></head><body><main>
+<header><div class="s">Example Shop · Learning · PR #42 (fictional)</div>
+<h1>Look up each shipping rate once</h1>
+<p class="s">Branch <code>perf/shipping-rate-lookup</code> → <code>main</code> · +60 / −20 · 2 files · OPEN</p></header>
+<nav><a href="#why">1 Why</a><a href="#concepts">2 Concepts</a><a href="#flow">3 Request flow</a><a href="#sim">4 Simulator</a><a href="#code">5 Code diff</a><a href="#scale">6 Scale</a><a href="#risk">7 Risk &amp; tests</a><a href="#quiz">8 Quiz</a></nav>
+
+<h2 id="why">1 · The one-sentence version</h2>
+<div class="card"><b>The cart page asked the carrier API for a shipping rate once per item, even though most items share the same carrier and zone. The PR asks once per distinct (carrier, zone) pair and reuses the answer. Prices shown are identical.</b></div>
+<div class="grid">
+<div class="card"><div class="s">Before</div><div class="big bad">1,200 ms</div>200 items → 200 rate lookups</div>
+<div class="card"><div class="s">After</div><div class="big ok">70 ms</div>12 distinct pairs → 12 lookups, same prices</div>
+<div class="card"><div class="s">Target</div><div class="big">p50 ≤ 500 ms</div>for the cart page. Verified only after deploy.</div></div>
+
+<h2 id="concepts">2 · Concepts you need</h2>
+<div class="grid">
+<div class="card"><b>Rate key</b><br>The values that decide the price: <i>carrier</i> and <i>zone</i>. Same key → same rate.</div>
+<div class="card"><b>Default carrier</b><br>If an item has no carrier of its own, the shop's default carrier is used.</div>
+<div class="card"><b>Surcharge</b><br>A per-zone extra fee added <u>after</u> the base rate is found, so it is part of the key.</div>
+<div class="card"><b>Memoisation</b><br>Remembering a result for a given input so the expensive call is not repeated.</div>
+</div>
+
+<h2 id="flow">3 · Where this sits in a request</h2>
+<div class="flow">
+<div class="step">Browser<br><code>GET /cart</code></div>
+<div class="step"><b>Controller</b><code>CartController.show()</code></div>
+<div class="step hot"><b>Service</b><code>ShippingService.rates_for(items)</code></div>
+<div class="step"><b>Data</b><code>load_cart_items()</code></div>
+<div class="step new"><b>NEW helper</b><code>distinct_rate_keys()</code></div>
+<div class="step"><b>View</b><code>cart.html</code> prints a price per item</div></div>
+
+<h2 id="sim">4 · Try it: old loop vs new loop</h2>
+<div class="card">
+<p class="s">Simplified model (not the real code). Press Step to walk the item list.</p>
+<div class="tabs"><button onclick="step()">Step ▶</button><button class="g" onclick="runAll()">Run all</button><button class="g" onclick="reset()">Reset</button></div>
+<div class="overflow"><table id="tb"></table></div>
+<p id="stat"></p>
+</div>
+
+<h2 id="code">5 · The code change</h2>
+<div class="grid">
+<div class="card"><b class="bad">Before</b><pre>for item in cart_items:
+  rate = carrier_api.rate(item.carrier, item.zone)  # slow
+  prices[item.id] = rate + surcharge(item.zone)</pre></div>
+<div class="card"><b class="ok">After</b><pre>seen = {}
+for item in cart_items:
+  key = (item.carrier, item.zone)
+  if key not in seen:                                # NEW
+    seen[key] = carrier_api.rate(*key)
+  prices[item.id] = seen[key] + surcharge(item.zone)</pre></div></div>
+<div class="card"><b>Details worth noticing</b><ul>
+<li>The key holds both inputs, so same carrier in a different zone is a <b>different</b> rate.</li>
+<li>The cache lives for one request only, so rates are never stale across requests.</li>
+<li>Item order is unchanged, so the cart shows the same list.</li></ul></div>
+
+<h2 id="scale">6 · Why it scales</h2>
+<div class="card"><label>Items in cart: <b id="np">200</b><input type="range" id="rp" min="10" max="1000" step="10" value="200" oninput="sc()"></label>
+<label>Distinct (carrier, zone) pairs: <b id="nr">12</b><input type="range" id="rr" min="1" max="100" value="12" oninput="sc()"></label>
+<div class="bar" id="b1"></div><div style="height:6px"></div><div class="bar n" id="b2"></div>
+<p class="s" id="sct"></p></div>
+
+<h2 id="risk">7 · Risk, tests, what's left</h2>
+<div class="card overflow"><table class="risk"><tr><th>Risk</th><th>Mitigation</th></tr>
+<tr><td>Two different keys wrongly merged → wrong price</td><td>Key holds both inputs; tests cover same carrier / different zone.</td></tr>
+<tr><td>Rollback</td><td>No schema change. Revert the commit.</td></tr>
+<tr><td>Target not proven</td><td>Issue stays open until post-deploy p50 is measured.</td></tr></table></div>
+<div class="card"><b>Not fixed here:</b> the surcharge lookup still runs once per item.</div>
+
+<h2 id="quiz">8 · Check your understanding</h2>
+<div id="quiz"></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+// ---------- simulator ----------
+const P=[['Apple','DHL','Z1'],['Banana','DHL','Z1'],['Carrot','UPS','Z1'],['Daikon','DHL','Z1'],['Egg','DHL','Z2'],['Fig','UPS','Z1'],['Grape','DHL','Z1'],['Honey','','Z1']];
+const DEFAULT='DHL';
+let i,seen,calc;
+function keyOf(p){return (p[1]||DEFAULT)+'|'+p[2]}
+function reset(){i=0;seen={};calc=0;render()}
+function step(){if(i>=P.length)return;const k=keyOf(P[i]);if(!seen[k]){seen[k]=1;calc++}i++;render()}
+function runAll(){while(i<P.length)step()}
+function render(){
+ let h='<tr><th>#</th><th>Item</th><th>Rate key</th><th>Action</th></tr>';
+ P.forEach((p,n)=>{const k=keyOf(p);let cls='',act='';
+  if(n<i){const first=P.findIndex(q=>keyOf(q)==k)==n;cls=first?'calc':'skip';act=first?'LOOK UP':'reuse'}
+  else if(n==i){cls='cur';act='← next'}
+  h+=`<tr class="${cls}"><td>${n+1}</td><td>${p[0]}</td><td>${k.replace('|',' / ')} ${p[1]?'':'(default carrier)'}</td><td>${act}</td></tr>`});
+ $('tb').innerHTML=h;
+ $('stat').innerHTML=`Old loop: <b class="bad">${i}</b> lookups · New loop: <b class="ok">${calc}</b> lookups`}
+reset();
+// ---------- scale ----------
+function sc(){const p=+$('rp').value,r=Math.min(+$('rr').value,p);$('np').textContent=p;$('nr').textContent=r;
+ $('b1').style.width='100%';$('b1').textContent=`Old: ${p} lookups ≈ ${(p*6).toFixed(0)} ms`;
+ const w=Math.max(r/p*100,6);$('b2').style.width=w+'%';$('b2').textContent=`New: ${r} lookups ≈ ${(r*6).toFixed(0)} ms`;
+ $('sct').textContent=`Roughly ${(p/r).toFixed(0)}× fewer lookups (assuming ~6 ms per lookup).`}
+sc();
+// ---------- quiz ----------
+const Q=[
+['Two items use DHL, one in zone Z1 and one in Z2. How many lookups?',['1 — same carrier','2 — zone is part of the key','0'],1],
+['An item has no carrier. Which carrier is used?',['Skipped','The default carrier','A random one'],1],
+['How long does the remembered rate live?',['One request','Forever','One day'],0],
+['Can the issue be closed once this merges?',['Yes','No — need post-deploy p50 numbers','Only after a schema change'],1]];
+$('quiz').innerHTML=Q.map((q,n)=>`<div class="card"><b>${n+1}. ${q[0]}</b><br>${q[1].map((o,j)=>`<button class="g" style="margin:6px 6px 0 0" onclick="ans(${n},${j})">${o}</button>`).join('')}<span id="r${n}" style="margin-left:6px"></span></div>`).join('');
+function ans(n,j){$('r'+n).innerHTML=j==Q[n][2]?'<b class="ok">✓ correct</b>':'<b class="bad">✗ try again</b>'}
+</script></body></html>
